@@ -10,6 +10,7 @@ from tkinter.filedialog import askopenfilename
 from loguru import logger
 from datetime import datetime, date
 from log_file import Log_File
+from missed_rows import Missed_Rows
 
 
 def change_code(df):
@@ -31,17 +32,27 @@ def change_type(df):
         return df['Тип_new']
     else:
         return df['Тип']
+    
+def change_none(df):
+    if df[column] == 'None' or  df[column] is None:
+        return ''
+    else:
+        return df[column]
 
-def thread_function(obj):
+def thread_log_function(obj):
     obj.prepare_data(merged1_copy, merged2_copy)
     obj.upload_file(merged1_copy, merged2_copy)
+
+def thread_missed_function(obj):
+    obj.prepare_rows(doc_database_copy, rd_database_copy)
+    obj.upload_rows()
     
 
 logger.remove()
 main_file_logger = logger.bind(name = 'main_file_logger').opt(colors = True)
-main_file_logger.add(sink = sys.stdout, format = "<green> {time:HH:mm:ss} </green> | {message}", level = "INFO")
+main_file_logger.add(sink = sys.stdout, format = "<green> {time:HH:mm:ss} </green> | {message}", level = "INFO", colorize = True)
 
-warnings.simplefilter(action = 'ignore', category = (UserWarning))
+warnings.simplefilter(action = 'ignore', category = (UserWarning, FutureWarning))
 database_root = askopenfilename(title = 'Select database to edit', filetypes=[('*.mdb', '*.accdb')]).replace('/', '\\')
 conn_str = (
     r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
@@ -59,6 +70,13 @@ rd_database['Ревизия'] = rd_database['Ревизия'].apply(lambda row: 
 doc_database['Срок'] = doc_database['Срок'].apply(lambda row: row if row in ['в производстве', 'В производстве', None] else datetime.strptime(row, '%d.%m.%Y').date()).astype(str)
 empty_rows_df = doc_database[(pd.isna(doc_database['Шифр'])) | (doc_database['Вид'] != 'Проектная документация') | (doc_database['Разработчик'] != 'Атомэнергопроект')]
 doc_database = doc_database[(~pd.isna(doc_database['Шифр'])) & (doc_database['Вид'] == 'Проектная документация') & (doc_database['Разработчик'] == 'Атомэнергопроект')]
+
+main_file_logger.info('Making copy of original dataframes')
+doc_database_copy = doc_database.copy()
+rd_database_copy = rd_database.copy()
+missed_rows = Missed_Rows(doc_database_copy, rd_database_copy)
+missed_df = threading.Thread(target = thread_missed_function, args = (missed_rows, ))
+missed_df.start()
 
 main_file_logger.info('Merging two dataframes')
 merged1_df = pd.merge(doc_database, rd_database,
@@ -78,7 +96,7 @@ main_file_logger.info('Making copies of already joined dataframes')
 merged1_copy = merged1_df[merged1_df['_merge'] == 'both'].copy()
 merged2_copy = merged2_df[merged2_df['_merge'] == 'both'].copy()
 summary_log_file = Log_File(merged1_copy, merged2_copy)
-log_file = threading.Thread(target = thread_function, args = (summary_log_file, ))
+log_file = threading.Thread(target = thread_log_function, args = (summary_log_file, ))
 log_file.start()
 
 main_file_logger.info('Preparing merging dataframes for summary dataframe')
@@ -102,42 +120,44 @@ summary_df = pd.concat([dataframe_part, summary_df])
 main_file_logger.info('Preparing the final file and writing it to the database')
 summary_df = pd.concat([summary_df, empty_rows_df]).sort_index()
 summary_df['Статус'] = summary_df.apply(change_status, axis = 1)
+for column in main_columns.none_columns:
+    summary_df[column] = summary_df.apply(change_none, axis = 1)
 
-# with pyodbc.connect(conn_str) as connection:
-#     cursor = connection.cursor()
-#     drop_table_query = '''DROP TABLE [Документация]'''
-#     cursor.execute(drop_table_query)
-#     cursor.commit()
-#     create_table_query = '''CREATE TABLE [Документация] ([Система] VARCHAR(200), 
-#                                             [Наименование] VARCHAR(200),
-#                                             [Шифр] VARCHAR(100),
-#                                             [Разработчик] VARCHAR(200),
-#                                             [Вид] VARCHAR(100),
-#                                             [Тип] VARCHAR(200),
-#                                             [Статус] VARCHAR(200),
-#                                             [Ревизия] VARCHAR(200), 
-#                                             [Дополнения] VARCHAR(200),
-#                                             [Срок] VARCHAR(100),
-#                                             [Сервер] VARCHAR(200),
-#                                             [Обоснование] VARCHAR(200))'''
-#     cursor.execute(create_table_query)
-#     cursor.commit()
-#     for row in summary_df.itertuples(index=False):
-#         insert_query = f'''INSERT INTO [Документация] ([Система], 
-#                                             [Наименование],
-#                                             [Шифр],
-#                                             [Разработчик],
-#                                             [Вид],
-#                                             [Тип],
-#                                             [Статус],
-#                                             [Ревизия], 
-#                                             [Дополнения],
-#                                             [Срок],
-#                                             [Сервер],
-#                                             [Обоснование]) 
-#                                             VALUES ({",".join(f"'{x}'" for x in row)})'''
-#         cursor.execute(insert_query)
-#     cursor.commit()
+with pyodbc.connect(conn_str) as connection:
+    cursor = connection.cursor()
+    drop_table_query = '''DROP TABLE [Документация]'''
+    cursor.execute(drop_table_query)
+    cursor.commit()
+    create_table_query = '''CREATE TABLE [Документация] ([Система] VARCHAR(200), 
+                                            [Наименование] VARCHAR(200),
+                                            [Шифр] VARCHAR(100),
+                                            [Разработчик] VARCHAR(200),
+                                            [Вид] VARCHAR(100),
+                                            [Тип] VARCHAR(200),
+                                            [Статус] VARCHAR(200),
+                                            [Ревизия] VARCHAR(200), 
+                                            [Дополнения] VARCHAR(200),
+                                            [Срок] VARCHAR(100),
+                                            [Сервер] VARCHAR(200),
+                                            [Обоснование] VARCHAR(200))'''
+    cursor.execute(create_table_query)
+    cursor.commit()
+    for row in summary_df.itertuples(index=False):
+        insert_query = f'''INSERT INTO [Документация] ([Система], 
+                                            [Наименование],
+                                            [Шифр],
+                                            [Разработчик],
+                                            [Вид],
+                                            [Тип],
+                                            [Статус],
+                                            [Ревизия], 
+                                            [Дополнения],
+                                            [Срок],
+                                            [Сервер],
+                                            [Обоснование]) 
+                                            VALUES ({",".join(f"'{x}'" for x in row)})'''
+        cursor.execute(insert_query)
+    cursor.commit()
 
 main_file_logger.info('Database updated')
 

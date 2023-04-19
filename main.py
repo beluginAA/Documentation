@@ -5,161 +5,101 @@ import warnings
 import main_columns
 import sys
 import threading
+import traceback
+
 
 from tkinter.filedialog import askopenfilename
 from loguru import logger
 from datetime import datetime, date
 from log_file import Log_File
 from missed_rows import Missed_Rows
-
-
-def change_code(df):
-    if df['Шифр_new'] != '':
-        return df['Шифр_new']
-    else:
-        return df['Код']
-
-def change_status(df):
-    if pd.isna(df['Статус']):
-        return 'Отсутствует'
-    elif 'ВК+' in df['Статус'] or 'Выдан в производство' in df['Статус']:
-        return 'Утвержден'
-    else:
-        return 'На согласовании'
-
-def change_type(df):
-    if pd.isna(df['Тип']):
-        return df['Тип_new']
-    else:
-        return df['Тип']
-    
-def change_none(df):
-    if df[column] == 'None' or  df[column] is None:
-        return ''
-    else:
-        return df[column]
-
-def thread_log_function(obj):
-    obj.prepare_data(merged1_copy, merged2_copy)
-    obj.upload_file(merged1_copy, merged2_copy)
-
-def thread_missed_function(obj):
-    obj.prepare_rows(doc_database_copy, rd_database_copy)
-    obj.upload_rows()
+from processing import Preproccessing, PostProcessing, ResultFiles
+from Functions import Functions
     
 
 logger.remove()
-main_file_logger = logger.bind(name = 'main_file_logger').opt(colors = True)
-main_file_logger.add(sink = sys.stdout, format = "<green> {time:HH:mm:ss} </green> | {message}", level = "INFO", colorize = True)
+mainFileLogger = logger.bind(name = 'main_file_logger').opt(colors = True)
+mainFileLogger.add(sink = sys.stdout, format = "<green> {time:HH:mm:ss} </green> | {message}", level = "INFO", colorize = True)
 
 warnings.simplefilter(action = 'ignore', category = (UserWarning, FutureWarning))
-database_root = askopenfilename(title = 'Select database to edit', filetypes=[('*.mdb', '*.accdb')]).replace('/', '\\')
-conn_str = (
-    r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
-    fr'DBQ={database_root};'
-    )
-with pyodbc.connect(conn_str) as connection:
-    rd_database_query = '''SELECT * FROM [РД]'''
-    doc_database_query = '''SELECT * FROM [Документация]'''
-    rd_database = pd.read_sql(rd_database_query, connection)
-    doc_database = pd.read_sql(doc_database_query, connection)
 
-main_file_logger.info('Preparing dataframes for merging')
-rd_database = rd_database[list(main_columns.rd_columns)]
-rd_database['Ревизия'] = rd_database['Ревизия'].apply(lambda row: None if row == '' else row)
-doc_database['Срок'] = doc_database['Срок'].apply(lambda row: row if row in ['в производстве', 'В производстве', None] else datetime.strptime(row, '%d.%m.%Y').date()).astype(str)
-empty_rows_df = doc_database[(pd.isna(doc_database['Шифр'])) | (doc_database['Вид'] != 'Проектная документация') | (doc_database['Разработчик'] != 'Атомэнергопроект')]
-doc_database = doc_database[(~pd.isna(doc_database['Шифр'])) & (doc_database['Вид'] == 'Проектная документация') & (doc_database['Разработчик'] == 'Атомэнергопроект')]
+mainFileLogger.info('Program starts.')
+databaseRoot = askopenfilename(title = 'Select database to edit', filetypes=[('*.mdb', '*.accdb')]).replace('/', '\\')
 
-main_file_logger.info('Making copy of original dataframes')
-doc_database_copy = doc_database.copy()
-rd_database_copy = rd_database.copy()
-missed_rows = Missed_Rows(doc_database_copy, rd_database_copy)
-missed_df = threading.Thread(target = thread_missed_function, args = (missed_rows, ))
-missed_df.start()
+mainFileLogger.info('Preparing dataframes for merging.')
+func = Functions()
+connect = Preproccessing(databaseRoot)
+result = ResultFiles()
+rdDatabase, docDatabase = connect.to_database()
+rdDatabase = rdDatabase[list(main_columns.rdColumns)]
+for col in main_columns.rdColumns:
+    rdDatabase[col] = rdDatabase.apply(lambda df: func.finding_empty_rows(df, col), axis = 1)
+for col in main_columns.doc_columns:
+    docDatabase[col] = docDatabase.apply(lambda df: func.finding_empty_rows(df, col), axis = 1)
+rdDatabase['Ревизия'] = rdDatabase['Ревизия'].apply(lambda row: None if row == '' else row)
+docDatabase['Срок'] = docDatabase['Срок'].apply(lambda row: row if row in ['в производстве', 'В производстве', None] else datetime.strptime(row, '%d.%m.%Y').date().strftime('%d-%m-%Y'))
+empty_rows_df = docDatabase[(pd.isna(docDatabase['Шифр'])) | (docDatabase['Вид'] != 'Проектная документация') | (docDatabase['Разработчик'] != 'Атомэнергопроект')]
+docDatabase = docDatabase[(~pd.isna(docDatabase['Шифр'])) & (docDatabase['Вид'] == 'Проектная документация') & (docDatabase['Разработчик'] == 'Атомэнергопроект')]
 
-main_file_logger.info('Merging two dataframes')
-merged1_df = pd.merge(doc_database, rd_database,
+mainFileLogger.info('Making copy of original dataframes.')
+docDatabaseCopy = docDatabase.copy()
+rdDatabaseCopy = rdDatabase.copy()
+missedRows = Missed_Rows()
+missedDf = threading.Thread(target = func.thread_missed_function, args = (missedRows, result, docDatabaseCopy, rdDatabaseCopy,))
+missedDf.start()
+
+mainFileLogger.info('Merging two dataframes.')
+cipherDf = pd.merge(docDatabase, rdDatabase,
                           how = 'left',
                           on = 'Шифр',
                           suffixes=['', '_new'],
                           indicator = True)
-left_only = merged1_df[merged1_df['_merge'] == 'left_only'][doc_database.columns]
-merged2_df = pd.merge(left_only, rd_database,
+leftOnly = cipherDf[cipherDf['_merge'] == 'left_only'][docDatabase.columns]
+cipherCodeDf = pd.merge(leftOnly, rdDatabase,
                      how = 'left',
                      left_on = 'Шифр',
                      right_on = 'Код',
                      suffixes=['', '_new'],
                      indicator=True)
 
-main_file_logger.info('Making copies of already joined dataframes')
-merged1_copy = merged1_df[merged1_df['_merge'] == 'both'].copy()
-merged2_copy = merged2_df[merged2_df['_merge'] == 'both'].copy()
-summary_log_file = Log_File(merged1_copy, merged2_copy)
-log_file = threading.Thread(target = thread_log_function, args = (summary_log_file, ))
-log_file.start()
+mainFileLogger.info('Making copies of already joined dataframes.')
+cipherDf = cipherDf[cipherDf['_merge'] == 'both'].copy()
+cipherCodeDfCopy = cipherCodeDf[cipherCodeDf['_merge'] == 'both'].copy()
+summaryLogFile = Log_File(cipherDf, cipherCodeDfCopy)
+logFile = threading.Thread(target = func.thread_log_function, args = (summaryLogFile, result, cipherDf, cipherCodeDfCopy,))
+logFile.start()
 
-main_file_logger.info('Preparing merging dataframes for summary dataframe')
-merged_both1_df = merged1_df[merged1_df['_merge'] == 'both'].copy()
-merged_both2_df = merged2_df[merged2_df['_merge'] == 'both'].copy()
-merged_both1_df['Тип'] = merged_both1_df.apply(change_type, axis = 1)
-merged_both2_df['Тип'] = merged_both2_df.apply(change_type, axis = 1)
+mainFileLogger.info('Preparing merging dataframes for summary dataframe.')
+resultCipherDf = cipherDf[cipherDf['_merge'] == 'both'].copy()
+resultCipherCodeDf = cipherCodeDf[cipherCodeDf['_merge'] == 'both'].copy()
+resultCipherDf['Тип'] = resultCipherDf.apply(func.change_type, axis = 1)
+resultCipherCodeDf['Тип'] = resultCipherCodeDf.apply(func.change_type, axis = 1)
 
-main_file_logger.info('Creating a summary table')
-dataframe_part = merged2_df[merged2_df['_merge'] == 'left_only'][doc_database.columns]
-summary_df = merged_both1_df[list(main_columns.merged_both1_columns)]
-summary_df.columns = doc_database.columns
-summary_df = pd.concat([dataframe_part, summary_df])
+mainFileLogger.info('Creating a summary table.')
+partDf = cipherCodeDf[cipherCodeDf['_merge'] == 'left_only'][docDatabase.columns]
+summaryDf = resultCipherDf[list(main_columns.CipherDfColumns)]
+summaryDf.columns = docDatabase.columns
+summaryDf = pd.concat([partDf, summaryDf])
 
-dataframe_part = merged_both2_df.copy()
-dataframe_part['Новый шифр'] = dataframe_part.apply(change_code, axis = 1)
-dataframe_part = dataframe_part[list(main_columns.merged_both2_columns)]
-dataframe_part.columns = doc_database.columns
-summary_df = pd.concat([dataframe_part, summary_df])
+partDf = resultCipherCodeDf.copy()
+partDf['Новый шифр'] = partDf.apply(func.change_code, axis = 1)
+partDf = partDf[list(main_columns.CipherCodeDfColumns)]
+partDf.columns = docDatabase.columns
+summaryDf = pd.concat([partDf, summaryDf])
 
-main_file_logger.info('Preparing the final file and writing it to the database')
-summary_df = pd.concat([summary_df, empty_rows_df]).sort_index()
-summary_df['Статус'] = summary_df.apply(change_status, axis = 1)
-for column in main_columns.none_columns:
-    summary_df[column] = summary_df.apply(change_none, axis = 1)
+mainFileLogger.info('Preparing the final file and writing it to the database.')
+summaryDf = pd.concat([summaryDf, empty_rows_df]).sort_index()
+summaryDf['Статус'] = summaryDf.apply(func.change_status, axis = 1)
+for column in main_columns.noneColumns:
+    summaryDf[column] = summaryDf.apply(lambda df: func.change_none(df, column), axis = 1)
 
-with pyodbc.connect(conn_str) as connection:
-    cursor = connection.cursor()
-    drop_table_query = '''DROP TABLE [Документация]'''
-    cursor.execute(drop_table_query)
-    cursor.commit()
-    create_table_query = '''CREATE TABLE [Документация] ([Система] VARCHAR(200), 
-                                            [Наименование] VARCHAR(200),
-                                            [Шифр] VARCHAR(100),
-                                            [Разработчик] VARCHAR(200),
-                                            [Вид] VARCHAR(100),
-                                            [Тип] VARCHAR(200),
-                                            [Статус] VARCHAR(200),
-                                            [Ревизия] VARCHAR(200), 
-                                            [Дополнения] VARCHAR(200),
-                                            [Срок] VARCHAR(100),
-                                            [Сервер] VARCHAR(200),
-                                            [Обоснование] VARCHAR(200))'''
-    cursor.execute(create_table_query)
-    cursor.commit()
-    for row in summary_df.itertuples(index=False):
-        insert_query = f'''INSERT INTO [Документация] ([Система], 
-                                            [Наименование],
-                                            [Шифр],
-                                            [Разработчик],
-                                            [Вид],
-                                            [Тип],
-                                            [Статус],
-                                            [Ревизия], 
-                                            [Дополнения],
-                                            [Срок],
-                                            [Сервер],
-                                            [Обоснование]) 
-                                            VALUES ({",".join(f"'{x}'" for x in row)})'''
-        cursor.execute(insert_query)
-    cursor.commit()
+# mainFileLogger.info('Making changes to the database.')
+# attempt = PostProcessing(databaseRoot)
+# attempt.delete_table()
+# attempt.create_table()
+# attempt.insert_into_table()
 
-main_file_logger.info('Database updated')
+# mainFileLogger.info('Database updated.')
 
 
 

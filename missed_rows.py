@@ -21,7 +21,9 @@ class Missed_Rows:
                                 on = 'Шифр',
                                 suffixes=['', '_new'],
                                 indicator = True)
-        pathDf = cipherDf[cipherDf['_merge'] == 'right_only'][rdDf.columns]
+        
+        pathDf = cipherDf[cipherDf['_merge'] == 'right_only'][main_columns.pathDfColumns]
+        pathDf.columns = main_columns.missedColumnsNew
 
         cipherCodeDf = pd.merge(docDf, pathDf,
                             how = 'outer',
@@ -29,12 +31,11 @@ class Missed_Rows:
                             right_on = 'Код',
                             suffixes=['', '_new'],
                             indicator=True)
+
         missedRows = cipherCodeDf[cipherCodeDf['_merge'] == 'right_only'][main_columns.missedColumns]
-        missedRows.to_excel('123.xlsx', index = False)
         missedRows = missedRows.loc[missedRows['Система_new'].isin(list(set(docDf['Система'])))]
         missedRows = missedRows.dropna(subset = ['Система_new'])
         missedRows.columns = main_columns.missedColumnsNew
-
         Missed_Rows.missedRowsLogger.info('Missing value search finished')
         return missedRows
 

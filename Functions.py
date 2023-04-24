@@ -35,11 +35,5 @@ class Functions:
         else:
             return df[column]
 
-    def thread_log_function(self, logObj:object, resultObj:object, df1:pd.DataFrame, df2:pd.DataFrame) -> None:
-        logDf = logObj.prepare_data(df1,df2)
-        resultObj. to_logfile(logDf, 'Итоговые значения')
 
-    def thread_missed_function(self, missedObj:object, resultObj:object, df1:pd.DataFrame, df2:pd.DataFrame) -> None:
-        missedRows = missedObj.prepare_rows(df1, df2)
-        resultObj.to_resultfile(missedRows)
         

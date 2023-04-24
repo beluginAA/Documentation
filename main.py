@@ -4,7 +4,6 @@ import pyodbc
 import warnings
 import main_columns
 import sys
-import threading
 import traceback
 
 
@@ -45,8 +44,8 @@ mainFileLogger.info('Making copy of original dataframes.')
 docDatabaseCopy = docDatabase.copy()
 rdDatabaseCopy = rdDatabase.copy()
 missedRows = Missed_Rows()
-missedDf = threading.Thread(target = func.thread_missed_function, args = (missedRows, result, docDatabaseCopy, rdDatabaseCopy,))
-missedDf.start()
+missed = missedRows.prepare_rows(docDatabaseCopy, rdDatabaseCopy)
+result.to_resultfile(missed)
 
 mainFileLogger.info('Merging two dataframes.')
 cipherDf = pd.merge(docDatabase, rdDatabase,
@@ -66,8 +65,8 @@ mainFileLogger.info('Making copies of already joined dataframes.')
 cipherDf = cipherDf[cipherDf['_merge'] == 'both'].copy()
 cipherCodeDfCopy = cipherCodeDf[cipherCodeDf['_merge'] == 'both'].copy()
 summaryLogFile = Log_File(cipherDf, cipherCodeDfCopy)
-logFile = threading.Thread(target = func.thread_log_function, args = (summaryLogFile, result, cipherDf, cipherCodeDfCopy,))
-logFile.start()
+logDf = summaryLogFile.prepare_data(cipherDf,cipherCodeDfCopy)
+result.to_logfile(logDf, 'Итоговые значения')
 
 mainFileLogger.info('Preparing merging dataframes for summary dataframe.')
 resultCipherDf = cipherDf[cipherDf['_merge'] == 'both'].copy()
